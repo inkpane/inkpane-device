@@ -31,4 +31,4 @@ Produces a `.kpkg` package for KOReader's package manager.
 
 AGPL-3.0-only. See [LICENSE](LICENSE).
 
-Parts of the networking and image-display code are derived from [usetrmnl/trmnl-koreader](https://github.com/usetrmnl/trmnl-koreader), which is MIT licensed. See [THIRD_PARTY_NOTICES](inkpane.koplugin/THIRD_PARTY_NOTICES).
+Third-party code included in the plugin is listed in [THIRD_PARTY_NOTICES](inkpane.koplugin/THIRD_PARTY_NOTICES).
