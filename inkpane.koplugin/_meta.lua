@@ -5,6 +5,10 @@
 local _ = require("gettext")
 return {
     name = "inkpane",
+    -- Kept in step with kpm/package/manifest.json. KOReader itself ignores
+    -- this; the community app store reads it to decide whether an installed
+    -- copy is older than the one in the public repo.
+    version = "1.0.4",
     fullname = _("InkPane"),
     description = _([[Pairs this e-reader with InkPane, fetches its dashboard image, and can use Kindle RTC wakeups for low-power refreshes.]]),
 }
