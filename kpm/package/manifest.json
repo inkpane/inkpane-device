@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "id": "inkpane",
+  "name": "InkPane",
+  "author": "InkPane",
+  "description": "Pairs this e-reader with InkPane and keeps its dashboard image updated.",
+  "version": [1, 0, 4],
+  "dependencies": [],
+  "supported_platforms": null
+}
