@@ -101,7 +101,7 @@ local OP_LOG_MAX_BYTES = 512 * 1024
 -- can be answered with what the device is actually running rather than a
 -- guess. See the migration in init(): settings persist, so a new value here
 -- reaches an existing install only because init() overwrites it.
-local CLIENT_VERSION = "1.0.4"
+local CLIENT_VERSION = "1.0.5"
 
 -- How long the tap menu stays up if nobody chooses. Shorter than the time the
 -- device waits before sleeping after a tap, so it never sleeps with the menu
@@ -453,7 +453,7 @@ function InkPane:closeFetchMessage(repaint)
 end
 
 -- While a Pane is on the display, KOReader must leave the screen as it is when
--- the Kindle sleeps, or its own sleep screen (a book cover, "Sleeping") is drawn
+-- the e-reader sleeps, or its own sleep screen (a book cover, "Sleeping") is drawn
 -- over the Pane until the next wake. This used to be forced once, at startup,
 -- and left that way for good, which replaced the person's own sleep screen even
 -- while they were just reading (reported 16 September 2026: "it completely
@@ -461,11 +461,14 @@ end
 --
 -- So it's held only while a Pane is shown, with the person's own settings saved
 -- first and put back when InkPane stops. KOReader reads these settings each
--- time the Kindle goes to sleep, so their value at that moment is all that
+-- time the e-reader goes to sleep, so their value at that moment is all that
 -- matters. sleep_screen_held is saved with our settings and survives a crash,
 -- so our own "leave as-is" is never saved as if it were their choice.
 function InkPane:holdSleepScreen()
-    if not Device:isKindle() or not G_reader_settings then return end
+    -- Every device, not just Kindles: a Kobo stamped "Sleeping" over the Pane on
+    -- each sleep (21 September 2026). These are KOReader's own settings, read the
+    -- same way on every device when it goes to sleep.
+    if not G_reader_settings then return end
     if not self.settings.sleep_screen_held then
         self.settings.saved_sleep_screen = {
             screensaver_type = G_reader_settings:readSetting("screensaver_type"),
