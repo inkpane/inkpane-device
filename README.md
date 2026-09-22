@@ -8,24 +8,18 @@ This repository covers the device client only. The hosted InkPane service and it
 
 ## What it does
 
-1. On first fetch the e-reader registers itself and shows a six-character pairing code.
+1. **Tools → InkPane → Pair this e-reader** registers it and shows a pairing code.
 2. You enter that code once at [inkpane.ink](https://inkpane.ink).
 3. From then on the e-reader fetches its screen image and displays it.
 4. On Kindles with RTC support it schedules a hardware wake, turns Wi-Fi on for the refresh, turns it off again, and suspends.
 
 ## Install
 
-Copy `inkpane.koplugin/` into your e-reader's `koreader/plugins/` folder, restart KOReader, then open **Tools → InkPane** and choose **Fetch screen now**.
+Copy `inkpane.koplugin/` into your e-reader's `koreader/plugins/` folder, restart KOReader, then open **Tools → InkPane**.
 
-The installed plugin expects `main-entry.lua` to be named `main.lua`, with `main.lua` shipped alongside it as `main_rtc.lua`. The build script does this for you.
+The folder here is the installed layout, so it needs no renaming or build step.
 
 If another auto-refreshing display plugin is installed, remove it first. Two plugins driving one device fight over the same wake alarm.
-
-## Build
-
-    sh kpm/build.sh
-
-Produces a `.kpkg` package for KOReader's package manager.
 
 ## Licence
 
