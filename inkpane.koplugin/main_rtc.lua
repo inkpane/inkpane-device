@@ -38,6 +38,12 @@ local Input = Device.input
 -- for both. It was 30, which only had to be well clear of the next alarm, and
 -- the extra 20 seconds were spent awake on every wake.
 local DISPLAY_SUSPEND_TIMEOUT = 10
+-- On a Kobo, KOReader delivers a scheduled wake from checkUnexpectedWakeup and
+-- then calls suspend() directly 30 seconds later. Our idle timer has to fire
+-- before that, with a few seconds to spare, or it is left pending across the
+-- sleep (see finishBackgroundCycle).
+local KOBO_RESUSPEND_AFTER_WAKE = 30
+local KOBO_RESUSPEND_MARGIN = 3
 -- How long to let KOReader's own machinery deliver the wake before assuming it
 -- never will. On Kindle the RTC task is executed from checkUnexpectedWakeup,
 -- which is scheduled 15 seconds after the resume and silently declines if
@@ -101,7 +107,7 @@ local OP_LOG_MAX_BYTES = 512 * 1024
 -- can be answered with what the device is actually running rather than a
 -- guess. See the migration in init(): settings persist, so a new value here
 -- reaches an existing install only because init() overwrites it.
-local CLIENT_VERSION = "1.0.5"
+local CLIENT_VERSION = "1.0.6"
 
 -- How long the tap menu stays up if nobody chooses. Shorter than the time the
 -- device waits before sleeping after a tap, so it never sleeps with the menu
@@ -129,6 +135,9 @@ local PANE_MENU_TIMEOUT = 8
 -- rather than 20 -- a Scribe page is 2.6 MB and the server has to draw it
 -- before a byte moves.
 local CYCLE_WATCHDOG_SECONDS = 300
+-- How many times a fetch someone asked for retries a request that never
+-- completed, five seconds apart. A scheduled refresh keeps its single retry.
+local INTERACTIVE_FETCH_RETRIES = 5
 
 -- The "Pro" mark is a statement about the plan, not about whoever is holding
 -- the device, so it is a fixed label rather than something the device has to
@@ -373,6 +382,8 @@ function InkPane:init()
     self.rtc_task = function()
         logger.info("InkPane: RTC wakeup fired")
         self:oplog("rtc_fired")
+        self.rtc_fired_at = os.time()
+        self:logWakeState("on_fire")
         self.expected_wake_epoch = nil
         UIManager:scheduleIn(0, function()
             if not self.auto_refresh_enabled then return end
@@ -578,6 +589,7 @@ function InkPane:onResume()
             if self.expected_wake_epoch ~= expected then return end
             logger.warn("InkPane: scheduled wake at", expected, "was never delivered; running it here")
             self:oplog("wake_not_delivered_recovery", "expected=" .. expected)
+            self.rtc_fired_at = nil
             self:recordFailure("late_wake")
             self.expected_wake_epoch = nil
             self:scheduleRtcWake()
@@ -1168,6 +1180,18 @@ function InkPane:endCycle()
     holdKindleAwake(false)
 end
 
+-- Reads KOReader's own wake bookkeeping: is an alarm armed, and how many wakes
+-- are queued. Both are internal to WakeupMgr, so this never throws.
+function InkPane:logWakeState(when)
+    if not Device.wakeup_mgr then return end
+    local ok, armed = pcall(function() return Device.wakeup_mgr:isWakeupAlarmScheduled() end)
+    local ok2, queued = pcall(function() return #(Device.wakeup_mgr._task_queue or {}) end)
+    self:oplog("wake_state", when
+        .. " armed=" .. tostring(ok and armed or "?")
+        .. " queued=" .. tostring(ok2 and queued or "?")
+        .. " now=" .. os.time())
+end
+
 function InkPane:unscheduleRtcWake()
     if Device.wakeup_mgr and self.rtc_task then
         Device.wakeup_mgr:removeTasks(nil, self.rtc_task)
@@ -1182,6 +1206,7 @@ function InkPane:scheduleRtcWake()
     self.expected_wake_epoch = os.time() + interval
     logger.info("InkPane: next RTC wake in", interval, "seconds")
     self:oplog("rtc_queued", "in=" .. interval .. " expected=" .. self.expected_wake_epoch)
+    self:logWakeState("after_queue")
     return true
 end
 
@@ -1196,8 +1221,28 @@ function InkPane:finishBackgroundCycle(success)
     -- network work. Keep the cadence fixed; Kindle writes the hardware alarm
     -- when KOReader reaches its normal ReadyToSuspend handoff.
     self:releaseAutoSuspendHold()
-    self:applyAutoSuspendTimeout(DISPLAY_SUSPEND_TIMEOUT)
-    self:oplog("suspend_prepare", "timeout=" .. DISPLAY_SUSPEND_TIMEOUT)
+
+    -- Kobo only. KOReader re-suspends a Kobo by calling suspend() directly 30
+    -- seconds after delivering a scheduled wake, which does not cancel our idle
+    -- timer. If a slow cycle has pushed that timer past the 30 seconds, it is
+    -- left pending across the sleep, fires the moment the next alarm wakes the
+    -- device, and its suspend request goes through Kobo:rescheduleSuspend --
+    -- which unschedules checkUnexpectedWakeup, the step that would have run our
+    -- wake and armed the next alarm. The device then sleeps until touched.
+    -- Seen twice on a Clara BW (22 September), after the only two cycles of 69
+    -- that took over 20 seconds; none of the 66 faster ones lost a wake.
+    --
+    -- So make ours fire first. Only when KOReader did deliver this wake: a
+    -- recovered wake has no pending re-suspend, and keeps the usual timeout.
+    -- Kindles never reach this; their sleep is handled by Amazon's powerd.
+    local timeout = DISPLAY_SUSPEND_TIMEOUT
+    if Device:isKobo() and self.rtc_fired_at then
+        local remaining = self.rtc_fired_at + KOBO_RESUSPEND_AFTER_WAKE - KOBO_RESUSPEND_MARGIN - os.time()
+        timeout = math.max(1, math.min(DISPLAY_SUSPEND_TIMEOUT, remaining))
+    end
+    self.rtc_fired_at = nil
+    self:applyAutoSuspendTimeout(timeout)
+    self:oplog("suspend_prepare", "timeout=" .. timeout)
 
     if not success and self.current_image_path then
         self:displayImage(self.current_image_path)
@@ -1261,14 +1306,25 @@ function InkPane:performFetch(background, is_retry)
     -- neither is fixed by waiting. Successful cycles are unaffected, so the
     -- extra five seconds is only ever paid when the network was demonstrably
     -- not ready.
-    if status == 0 and not is_retry then
-        logger.warn("InkPane: metadata request did not complete; retrying once in 5s")
-        self:oplog("api_display_retry", "after=5s")
+    --
+    -- A fetch someone asked for gets more patience than a scheduled one. On a
+    -- Kobo woken to "Refresh now" (23 September), the radio linked up and
+    -- KOReader reported connected while the router had not yet given the Kobo
+    -- an address: the request went out, the single retry went out, and both
+    -- failed while DHCP was still asking. The router answered a few seconds
+    -- later. A scheduled refresh keeps its single retry: on a Kobo, KOReader puts
+    -- the device back to sleep 30 seconds after a scheduled wake, and a retry
+    -- left pending across that sleep would resume at the next wake.
+    local attempt = tonumber(is_retry) or (is_retry and 1 or 0)
+    local max_retries = background and 1 or INTERACTIVE_FETCH_RETRIES
+    if status == 0 and attempt < max_retries then
+        logger.warn("InkPane: metadata request did not complete; retrying in 5s, attempt", attempt + 1)
+        self:oplog("api_display_retry", "after=5s n=" .. (attempt + 1))
         UIManager:scheduleIn(5, function()
             -- The cycle can have been ended underneath us in those five seconds
             -- (user stopped InkPane, or the watchdog fired).
             if not self.refresh_in_progress then return end
-            self:performFetch(background, true)
+            self:performFetch(background, attempt + 1)
         end)
         return
     end
