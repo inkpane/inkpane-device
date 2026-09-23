@@ -107,7 +107,7 @@ local OP_LOG_MAX_BYTES = 512 * 1024
 -- can be answered with what the device is actually running rather than a
 -- guess. See the migration in init(): settings persist, so a new value here
 -- reaches an existing install only because init() overwrites it.
-local CLIENT_VERSION = "1.0.6"
+local CLIENT_VERSION = "1.0.7"
 
 -- How long the tap menu stays up if nobody chooses. Shorter than the time the
 -- device waits before sleeping after a tap, so it never sleeps with the menu
@@ -286,7 +286,10 @@ local function jsonRequest(url, method, body, headers)
     local success, status = httpx.request(request)
     local response_body = table.concat(sink)
     if not success or success ~= 1 then
-        return nil, tonumber(status) or 0, "network request failed"
+        -- On failure luasocket's second value is the reason ("timeout", "host or
+        -- service not provided, or not known", "Network is unreachable"...).
+        -- Keep it: "http 0" alone cannot tell a dead link from missing DNS.
+        return nil, tonumber(status) or 0, tostring(status or "network request failed")
     end
 
     local decoded = nil
@@ -1289,8 +1292,12 @@ function InkPane:performFetch(background, is_retry)
     end
 
     self:oplog("api_display_start")
-    local response, status = self:fetchMetadata()
-    self:oplog("api_display_result", "http=" .. tostring(status))
+    local response, status, detail = self:fetchMetadata()
+    if status == 0 and type(detail) == "string" then
+        self:oplog("api_display_result", "http=0 err=" .. detail:gsub("%s+", "_"):sub(1, 60))
+    else
+        self:oplog("api_display_result", "http=" .. tostring(status))
+    end
 
     -- Status 0 is jsonRequest's "the request never completed" -- no HTTP
     -- response at all, as distinct from a server that answered with 401 or 500.
@@ -1317,6 +1324,20 @@ function InkPane:performFetch(background, is_retry)
     -- left pending across that sleep would resume at the next wake.
     local attempt = tonumber(is_retry) or (is_retry and 1 or 0)
     local max_retries = background and 1 or INTERACTIVE_FETCH_RETRIES
+
+    -- Kobo only. After the Kobo had been connected to a computer, KOReader
+    -- restarted and "Refresh now" found the interface up with an address -- so the
+    -- cycle trusted it and never brought Wi-Fi up -- yet every request failed at
+    -- once, five retries in a row (23 September). Retrying a dead link changes
+    -- nothing; restarting Wi-Fi does, and it is what a Kobo does on every normal
+    -- wake anyway. Once per cycle, only for a connection we did not bring up.
+    if status == 0 and attempt == 0 and not background and self.wifi_trusted_existing
+        and Device:isKobo() and NetworkMgr.restoreWifiAsync then
+        self.wifi_trusted_existing = false
+        self:oplog("wifi_restart", "reason=trusted_connection_failed")
+        pcall(function() NetworkMgr:restoreWifiAsync() end)
+    end
+
     if status == 0 and attempt < max_retries then
         logger.warn("InkPane: metadata request did not complete; retrying in 5s, attempt", attempt + 1)
         self:oplog("api_display_retry", "after=5s n=" .. (attempt + 1))
@@ -1415,6 +1436,7 @@ function InkPane:refresh(background)
     self:beginCycle()
     self.wifi_enabled_by_inkpane = false
     self:oplog("cycle_start", "background=" .. tostring(background))
+    self.wifi_trusted_existing = false
 
     -- A manual fetch used to say nothing unless Wi-Fi happened to be off, so on
     -- a Scribe -- where connecting, drawing and downloading a 2.6 MB screen can
@@ -1620,6 +1642,7 @@ function InkPane:refresh(background)
         pcall(function() NetworkMgr:queryNetworkState() end)
         if NetworkMgr:isConnected() then
             self:oplog("wifi_already_connected")
+            self.wifi_trusted_existing = true
             onConnected()
             return
         end
