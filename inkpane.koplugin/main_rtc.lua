@@ -107,7 +107,7 @@ local OP_LOG_MAX_BYTES = 512 * 1024
 -- can be answered with what the device is actually running rather than a
 -- guess. See the migration in init(): settings persist, so a new value here
 -- reaches an existing install only because init() overwrites it.
-local CLIENT_VERSION = "1.0.7"
+local CLIENT_VERSION = "1.1.0"
 
 -- How long the tap menu stays up if nobody chooses. Shorter than the time the
 -- device waits before sleeping after a tap, so it never sleeps with the menu

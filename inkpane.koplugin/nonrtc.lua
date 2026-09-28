@@ -11,7 +11,13 @@
 
 local NetworkMgr = require("ui/network/manager")
 local UIManager = require("ui/uimanager")
+local ffi = require("ffi")
 local logger = require("logger")
+
+-- Android only (BOOX, Nook, Android PocketBooks). Everywhere else this require
+-- fails and the screen hold below does nothing.
+local is_android, android = pcall(require, "android")
+if not is_android then android = nil end
 
 return function(InkPane)
     local original_init = InkPane.init
@@ -29,8 +35,36 @@ return function(InkPane)
     InkPane.software_refresh_scheduled = false
     InkPane.software_standby_hold_owned = false
     InkPane.software_refresh_background = nil
+    InkPane.android_saved_timeout = nil
+
+    -- On Android the system turns the screen off after its idle timeout, which
+    -- pauses KOReader and with it our timer (onSuspend below), so the Pane
+    -- stops updating. KOReader's own "Keep screen on" option prevents that; we
+    -- switch it on while InkPane is running and put the user's choice back when
+    -- it stops. The user's saved setting is never changed.
+    function InkPane:holdAndroidScreenOn()
+        if not android or self.android_saved_timeout ~= nil then return end
+        local ok, current = pcall(android.timeout.get)
+        local keep_on = ffi.C.AKEEP_SCREEN_ON_ENABLED
+        if not ok or current == keep_on then return end
+        if pcall(android.timeout.set, keep_on) then
+            self.android_saved_timeout = current
+            logger.info("InkPane: keeping the screen on; saved timeout", current)
+            self:oplog("android_screen_on", "saved=" .. tostring(current))
+        end
+    end
+
+    function InkPane:releaseAndroidScreenOn()
+        if not android or self.android_saved_timeout == nil then return end
+        local saved = self.android_saved_timeout
+        self.android_saved_timeout = nil
+        pcall(android.timeout.set, saved)
+        logger.info("InkPane: restored screen timeout", saved)
+        self:oplog("android_screen_restored", "timeout=" .. tostring(saved))
+    end
 
     function InkPane:holdSoftwareStandby()
+        self:holdAndroidScreenOn()
         if self.software_standby_hold_owned then return end
         UIManager:preventStandby()
         self.software_standby_hold_owned = true
@@ -39,6 +73,7 @@ return function(InkPane)
     end
 
     function InkPane:releaseSoftwareStandbyHold()
+        self:releaseAndroidScreenOn()
         if not self.software_standby_hold_owned then return end
         UIManager:allowStandby()
         self.software_standby_hold_owned = false

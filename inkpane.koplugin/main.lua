@@ -34,6 +34,21 @@ if not pairing_chunk then
 end
 InkPane = pairing_chunk()(InkPane)
 
+-- Showing the Pane as the sleep screen. Optional, so it is loaded softly: a
+-- copy without this file, or with a broken one, must still work exactly as it
+-- did before, rather than stop the plugin loading at all.
+local sleep_chunk, sleep_error = loadfile(plugin_dir .. "sleepscreen.lua")
+if sleep_chunk then
+    local ok, with_sleep_screen = pcall(function() return sleep_chunk()(InkPane) end)
+    if ok and with_sleep_screen then
+        InkPane = with_sleep_screen
+    else
+        require("logger").warn("InkPane: sleep screen unavailable:", with_sleep_screen)
+    end
+else
+    require("logger").info("InkPane: no sleep screen:", sleep_error)
+end
+
 -- Devices without KOReader's hardware wake manager get the software-timer
 -- extension layered on top of the same pairing-aware client.
 if Device.wakeup_mgr ~= nil then
